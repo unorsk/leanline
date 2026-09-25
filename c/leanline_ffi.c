@@ -373,6 +373,43 @@ static void restore_at_exit(void) {
   if (g_raw_fd >= 0) tcsetattr(g_raw_fd, TCSAFLUSH, &g_orig);
 }
 
+/*
+ * Signals that terminate the process: restore the terminal first, then die
+ * from the same signal. Only installed where the program kept the default
+ * disposition, and only while the terminal is in raw mode.
+ */
+static const int g_fatal_signals[] = {SIGTERM, SIGHUP, SIGQUIT};
+#define N_FATAL (sizeof g_fatal_signals / sizeof g_fatal_signals[0])
+static struct sigaction g_old_fatal[N_FATAL];
+static int g_fatal_installed[N_FATAL];
+
+static void on_fatal(int sig) {
+  if (g_raw_fd >= 0) tcsetattr(g_raw_fd, TCSAFLUSH, &g_orig);
+  signal(sig, SIG_DFL);
+  raise(sig);
+}
+
+static void install_fatal_handlers(void) {
+  for (size_t i = 0; i < N_FATAL; i++) {
+    struct sigaction cur;
+    if (g_fatal_installed[i] || sigaction(g_fatal_signals[i], NULL, &cur) != 0) continue;
+    if (cur.sa_handler != SIG_DFL) continue;
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = on_fatal;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(g_fatal_signals[i], &sa, &g_old_fatal[i]) == 0) g_fatal_installed[i] = 1;
+  }
+}
+
+static void uninstall_fatal_handlers(void) {
+  for (size_t i = 0; i < N_FATAL; i++) {
+    if (!g_fatal_installed[i]) continue;
+    sigaction(g_fatal_signals[i], &g_old_fatal[i], NULL);
+    g_fatal_installed[i] = 0;
+  }
+}
+
 /* Create the self-pipe. Idempotent. */
 LEAN_EXPORT lean_obj_res leanline_init(void) {
   if (ensure_pipe() != 0) return err_errno("pipe");
@@ -417,6 +454,7 @@ LEAN_EXPORT lean_obj_res leanline_raw_enable(uint32_t fd) {
   t.c_cc[VMIN] = 1;
   t.c_cc[VTIME] = 0;
   if (tcsetattr((int)fd, TCSADRAIN, &t) != 0) return err_errno("tcsetattr");
+  install_fatal_handlers();
   return ok_unit();
 }
 
@@ -425,6 +463,7 @@ LEAN_EXPORT lean_obj_res leanline_raw_disable(uint32_t fd) {
   if (g_raw_fd >= 0) {
     int rfd = g_raw_fd;
     g_raw_fd = -1;
+    uninstall_fatal_handlers();
     if (tcsetattr(rfd, TCSADRAIN, &g_orig) != 0) return err_errno("tcsetattr");
   }
   return ok_unit();

@@ -61,8 +61,9 @@ structure Prefs where
   customBindings : List (Key × List Key) := []
   /-- `keyseq:` lines: extra escape sequences, optionally for one `$TERM` only. -/
   customKeySequences : List (Option String × List UInt8 × Key) := []
-  /-- Milliseconds to wait for the rest of an escape sequence. -/
-  keySeqTimeout : Nat := 50
+  /-- Milliseconds to wait for the rest of an escape sequence (also the delay
+  before a lone Escape is recognised). -/
+  keySeqTimeout : Nat := 100
   /-- Show fish-style suggestions from history after the cursor. -/
   historySuggestions : Bool := false
   /-- Up/Down search history for entries starting with the text before the cursor. -/

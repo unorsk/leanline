@@ -22,7 +22,7 @@ def sample : String :=
   "# Leanline extensions\n" ++
   "historySuggestions: yes\n" ++
   "prefix-history-search: on\n" ++
-  "keySeqTimeout: 100\n"
+  "keySeqTimeout: 30\n"
 
 set_option maxRecDepth 100000 in
 /-- Every setting of the sample file is understood (one evaluation of the
@@ -33,7 +33,7 @@ example :
     p.historyDuplicates = .ignoreConsecutive ∧ p.completionType = .menu ∧ p.completionPaging = false ∧
     p.completionPromptLimit = none ∧ p.listCompletionsImmediately = false ∧
     p.customBindings = [(Key.ctrl 't', [.plain .up])] ∧ p.historySuggestions = true ∧
-    p.prefixHistorySearch = true ∧ p.keySeqTimeout = 100 ∧
+    p.prefixHistorySearch = true ∧ p.keySeqTimeout = 30 ∧
     -- key sequences apply to the named terminal only (or to all when unnamed)
     p.keySeqTable (some "xterm") =
       [([0x1B, 0x5B, 0x31, 0x3B, 0x35, 0x44], ⟨.left, { ctrl := true }⟩), ([0x1B, 0x5B, 0x39, 0x39, 0x7E], .plain (.fn 12))] ∧

@@ -36,3 +36,5 @@ lean_lib LeanlineTests where
 @[default_target]
 lean_exe «leanline-demo» where
   root := `Examples.Demo
+lean_exe apitmp where
+  root := `Examples.ApiTmp

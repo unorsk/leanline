@@ -63,14 +63,14 @@ inductive WaitResult where
   | timeout
   | ready
   | resized
+  /-- Another thread called `wake`, or a handled signal arrived. -/
   | woken
-  | sigint
   | hangup
   deriving DecidableEq, Repr, Inhabited
 
 /-- Block until input is available, the window is resized, another thread
-calls `wake`, SIGINT is delivered (if `withSigintHandler` is active), or the
-timeout expires. `none` waits indefinitely. -/
+calls `wake` (or SIGINT arrives while `installSigintHandler` is in effect),
+or the timeout expires. `none` waits indefinitely. -/
 def wait (fd : Fd) (timeoutMs : Option Nat := none) : IO WaitResult := do
   let t : UInt32 := match timeoutMs with
     | none => 0xffffffff
@@ -80,7 +80,6 @@ def wait (fd : Fd) (timeoutMs : Option Nat := none) : IO WaitResult := do
     | 1 => .ready
     | 2 => .resized
     | 3 => .woken
-    | 4 => .sigint
     | _ => .hangup
 
 /-- Read at most `max` bytes; an empty array means end of file. -/

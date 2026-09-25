@@ -73,7 +73,7 @@ partial def next (r : Reader) : IO TermInput := do
       decodeInto r true
       next r
     | .resized => return .resized
-    | .woken | .sigint => return .woken
+    | .woken => return .woken
     | .hangup =>
       if pending.isEmpty then return .eof
       decodeInto r true
