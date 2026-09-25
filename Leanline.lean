@@ -1,3 +1,4 @@
+import Leanline.Text
 import Leanline.Unicode
 import Leanline.Grapheme
 import Leanline.LineBuffer

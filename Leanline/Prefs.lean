@@ -74,9 +74,9 @@ namespace Prefs
 def defaultPrefs : Prefs := {}
 
 private def norm (s : String) : String :=
-  String.ofList (s.toLower.toList.filter fun c => c != '-' && c != '_' && c != ' ')
+  String.ofList ((Text.lower s.toList).filter fun c => c != '-' && c != '_' && c != ' ')
 
-private def trimStr (s : String) : String := s.trimAscii.toString
+private def trimStr (s : String) : String := Text.trimString s
 
 def parseBool (s : String) : Option Bool :=
   match norm s with
@@ -88,8 +88,8 @@ def parseMaybeNat (s : String) : Option (Option Nat) :=
   let n := norm s
   if n == "nothing" || n == "none" || n == "unlimited" then some none
   else
-    let body := if n.startsWith "just" then String.ofList (n.toList.drop 4) else n
-    body.toNat?.map some
+    let body := if Text.isPrefix "just" n then n.toList.drop 4 else n.toList
+    (Text.toNat? body).map some
 
 def parseEditMode (s : String) : Option EditMode :=
   match norm s with
@@ -122,7 +122,7 @@ def parseCompletionType (s : String) : Option CompletionType :=
 and the text after the closing quote. -/
 def parseQuoted (s : String) : Option (List UInt8 × String) :=
   match s.toList with
-  | '"' :: rest => go rest []
+  | '"' :: rest => go rest.length rest []
   | _ => none
 where
   isDigit (c : Char) : Bool := '0' ≤ c && c ≤ '9'
@@ -131,26 +131,28 @@ where
     else if 'a' ≤ c && c ≤ 'f' then some (c.toNat - 'a'.toNat + 10)
     else if 'A' ≤ c && c ≤ 'F' then some (c.toNat - 'A'.toNat + 10)
     else none
-  go : List Char → List UInt8 → Option (List UInt8 × String)
-    | [], _ => none
-    | '"' :: rest, acc => some (acc.reverse, String.ofList rest)
-    | '\\' :: 'E' :: 'S' :: 'C' :: rest, acc => go rest (0x1B :: acc)
-    | '\\' :: 'e' :: rest, acc => go rest (0x1B :: acc)
-    | '\\' :: 'n' :: rest, acc => go rest (0x0A :: acc)
-    | '\\' :: 't' :: rest, acc => go rest (0x09 :: acc)
-    | '\\' :: 'r' :: rest, acc => go rest (0x0D :: acc)
-    | '\\' :: 'x' :: rest, acc =>
+  utf8 (c : Char) : List UInt8 := String.utf8EncodeChar c
+  -- Each step consumes at least one character, so the length is enough fuel.
+  go : Nat → List Char → List UInt8 → Option (List UInt8 × String)
+    | 0, _, _ => none
+    | _, [], _ => none
+    | _ + 1, '"' :: rest, acc => some (acc.reverse, String.ofList rest)
+    | fuel + 1, '\\' :: 'E' :: 'S' :: 'C' :: rest, acc => go fuel rest (0x1B :: acc)
+    | fuel + 1, '\\' :: 'e' :: rest, acc => go fuel rest (0x1B :: acc)
+    | fuel + 1, '\\' :: 'n' :: rest, acc => go fuel rest (0x0A :: acc)
+    | fuel + 1, '\\' :: 't' :: rest, acc => go fuel rest (0x09 :: acc)
+    | fuel + 1, '\\' :: 'r' :: rest, acc => go fuel rest (0x0D :: acc)
+    | fuel + 1, '\\' :: 'x' :: rest, acc =>
       let ds := rest.takeWhile (hexVal · |>.isSome)
       let v := ds.foldl (fun a d => a * 16 + (hexVal d).getD 0) 0
-      go (rest.drop ds.length) (v.toUInt8 :: acc)
-    | '\\' :: c :: rest, acc =>
+      go fuel (rest.drop ds.length) (v.toUInt8 :: acc)
+    | fuel + 1, '\\' :: c :: rest, acc =>
       if isDigit c then
         let ds := (c :: rest).takeWhile isDigit
         let v := ds.foldl (fun a d => a * 10 + (d.toNat - '0'.toNat)) 0
-        go ((c :: rest).drop ds.length) (v.toUInt8 :: acc)
-      else go rest ((String.singleton c).toUTF8.toList.reverse ++ acc)
-    | c :: rest, acc => go rest ((String.singleton c).toUTF8.toList.reverse ++ acc)
-  termination_by l => l.length
+        go fuel ((c :: rest).drop ds.length) (v.toUInt8 :: acc)
+      else go fuel rest ((utf8 c).reverse ++ acc)
+    | fuel + 1, c :: rest, acc => go fuel rest ((utf8 c).reverse ++ acc)
 
 /-- Apply one `field: value` setting. -/
 def applySetting (p : Prefs) (field value : String) : Except String Prefs :=
@@ -166,7 +168,7 @@ def applySetting (p : Prefs) (field value : String) : Except String Prefs :=
   | "completionpaging" => orBad (parseBool value) fun v => { p with completionPaging := v }
   | "completionpromptlimit" => orBad (parseMaybeNat value) fun v => { p with completionPromptLimit := v }
   | "listcompletionsimmediately" => orBad (parseBool value) fun v => { p with listCompletionsImmediately := v }
-  | "keyseqtimeout" => orBad value.toNat? fun v => { p with keySeqTimeout := v }
+  | "keyseqtimeout" => orBad (Text.toNat? value.toList) fun v => { p with keySeqTimeout := v }
   | "historysuggestions" => orBad (parseBool value) fun v => { p with historySuggestions := v }
   | "prefixhistorysearch" => orBad (parseBool value) fun v => { p with prefixHistorySearch := v }
   | "bind" =>
@@ -175,10 +177,10 @@ def applySetting (p : Prefs) (field value : String) : Except String Prefs :=
     | _ => bad
   | "keyseq" =>
     let (term, rest) :=
-      if value.startsWith "\"" then (none, value)
-      else match value.splitOn " " with
-        | t :: more => (some t, trimStr (" ".intercalate more))
-        | [] => (none, value)
+      if Text.isPrefix "\"" value then (none, value)
+      else match Text.splitFirst ' ' value.toList with
+        | some (t, more) => (some (String.ofList t), trimStr (String.ofList more))
+        | none => (none, value)
     match parseQuoted rest with
     | some (bytes, keyText) =>
       match Key.parse? (trimStr keyText) with
@@ -191,17 +193,16 @@ def applySetting (p : Prefs) (field value : String) : Except String Prefs :=
 /-- Parse a preferences file. Returns the preferences and one diagnostic per
 line that could not be understood (those lines are skipped). -/
 def parse (contents : String) (base : Prefs := {}) : Prefs × List String :=
-  let lines := contents.splitOn "\n"
+  let lines := Text.splitOn '\n' contents.toList
   lines.zipIdx.foldl (init := (base, [])) fun (p, errs) (line, i) =>
-    let l := trimStr line
-    if l.isEmpty || l.startsWith "--" || l.startsWith "#" then (p, errs)
-    else match l.splitOn ":" with
-      | field :: valueParts =>
-        if valueParts.isEmpty then (p, errs ++ [s!"line {i + 1}: expected 'field: value'"])
-        else match applySetting p (trimStr field) (trimStr (":".intercalate valueParts)) with
-          | .ok p' => (p', errs)
-          | .error e => (p, errs ++ [s!"line {i + 1}: {e}"])
-      | [] => (p, errs)
+    let l := Text.trim line
+    if l.isEmpty || "--".toList.isPrefixOf l || "#".toList.isPrefixOf l then (p, errs)
+    else match Text.splitFirst ':' l with
+      | none => (p, errs ++ [s!"line {i + 1}: expected 'field: value'"])
+      | some (field, value) =>
+        match applySetting p (String.ofList (Text.trim field)) (String.ofList (Text.trim value)) with
+        | .ok p' => (p', errs)
+        | .error e => (p, errs ++ [s!"line {i + 1}: {e}"])
 
 /-- Default location of the preferences file: `~/.leanline`. -/
 def defaultPath : IO (Option System.FilePath) := do

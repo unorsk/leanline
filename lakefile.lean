@@ -26,12 +26,10 @@ target ffiLib pkg : FilePath := do
 lean_lib Leanline where
   moreLinkObjs := #[ffiLib]
 
-/-- Theorems about the pure core. Building this library checks every proof. -/
+/-- Theorems about the library. Building this target checks every proof. -/
+@[default_target]
 lean_lib LeanlineTests where
   globs := #[.submodules `LeanlineTests]
-
-lean_lib Examples where
-  globs := #[.submodules `Examples]
 
 /-- Interactive demonstration of the library. -/
 @[default_target]

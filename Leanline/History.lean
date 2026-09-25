@@ -1,3 +1,5 @@
+import Leanline.Text
+
 /-!
 # History
 
@@ -74,19 +76,35 @@ entry are escaped as `\\` and `\n`, so multi-line entries survive a round
 trip. Any other backslash sequence is read literally, which keeps plain
 history files written by other tools (for example Haskeline's) readable. -/
 
-def escapeEntry (s : String) : String :=
-  String.ofList <| s.toList.flatMap fun
-    | '\\' => ['\\', '\\']
-    | '\n' => ['\\', 'n']
-    | '\r' => ['\\', 'r']
-    | c => [c]
+def escapeChar (c : Char) : List Char :=
+  if c == '\\' then ['\\', '\\']
+  else if c == '\n' then ['\\', 'n']
+  else if c == '\r' then ['\\', 'r']
+  else [c]
 
-def unescapeChars : List Char → List Char
-  | '\\' :: '\\' :: rest => '\\' :: unescapeChars rest
-  | '\\' :: 'n' :: rest => '\n' :: unescapeChars rest
-  | '\\' :: 'r' :: rest => '\r' :: unescapeChars rest
-  | c :: rest => c :: unescapeChars rest
+def escapeChars : List Char → List Char
   | [] => []
+  | c :: cs => escapeChar c ++ escapeChars cs
+
+def escapeEntry (s : String) : String := String.ofList (escapeChars s.toList)
+
+/-- The character that `\c` stands for. -/
+def unescapeOne : Char → Option Char
+  | '\\' => some '\\'
+  | 'n' => some '\n'
+  | 'r' => some '\r'
+  | _ => none
+
+/-- Decode escapes; `pending` means a backslash has just been read. -/
+def unescapeAux : Bool → List Char → List Char
+  | pending, [] => if pending then ['\\'] else []
+  | false, c :: cs => if c == '\\' then unescapeAux true cs else c :: unescapeAux false cs
+  | true, c :: cs =>
+    match unescapeOne c with
+    | some e => e :: unescapeAux false cs
+    | none => '\\' :: c :: unescapeAux false cs
+
+def unescapeChars (cs : List Char) : List Char := unescapeAux false cs
 
 def unescapeEntry (s : String) : String := String.ofList (unescapeChars s.toList)
 
@@ -96,8 +114,9 @@ def serialize (h : History) : String :=
 
 /-- Parse the file format. Blank lines are ignored. -/
 def parse (contents : String) (maxSize : Option Nat := none) : History :=
-  let lines := (contents.splitOn "\n").map fun l => if l.endsWith "\r" then String.ofList l.toList.dropLast else l
-  let entries := (lines.filter (· != "")).map unescapeEntry
+  let lines := (Text.splitOn '\n' contents.toList).map fun l =>
+    if l.getLast? == some '\r' then l.dropLast else l
+  let entries := (lines.filter (!·.isEmpty)).map fun l => String.ofList (unescapeChars l)
   enforceLimit { entries := entries.reverse, maxSize }
 
 /-- Load a history file. A missing file yields an empty history. -/

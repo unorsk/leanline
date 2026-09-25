@@ -1,3 +1,5 @@
+import Leanline.Text
+
 /-!
 # Completion
 
@@ -66,16 +68,23 @@ def wordStart (escape : Option Char) (isBreak : Char → Bool) : List Char → N
     else if isBreak c then wordStart escape isBreak rest (i + 1) (i + 1)
     else wordStart escape isBreak rest (i + 1) start
 
-/-- Remove escape characters (each escapes the character after it). -/
-def unescapeWith (escape : Option Char) : List Char → List Char
-  | c :: d :: rest => if escape == some c then d :: unescapeWith escape rest else c :: unescapeWith escape (d :: rest)
-  | cs => cs
+/-- Remove escape characters (each escapes the character after it; a
+trailing escape character is kept). -/
+def unescapeWith (escape : Option Char) (cs : List Char) : List Char := go false cs
+where
+  /-- `escaped`: the previous character was an escape character. -/
+  go : Bool → List Char → List Char
+    | escaped, [] => if escaped then escape.toList else []
+    | true, c :: cs => c :: go false cs
+    | false, c :: cs => if escape == some c then go true cs else c :: go false cs
 
 /-- Escape every character satisfying `needs` (and the escape character itself). -/
-def escapeWith (escape : Option Char) (needs : Char → Bool) (cs : List Char) : List Char :=
-  match escape with
-  | none => cs
-  | some e => cs.flatMap fun c => if c == e || needs c then [e, c] else [c]
+def escapeWith (escape : Option Char) (needs : Char → Bool) : List Char → List Char
+  | [] => []
+  | c :: cs =>
+    match escape with
+    | some e => if c == e || needs c then e :: c :: escapeWith escape needs cs else c :: escapeWith escape needs cs
+    | none => c :: escapeWith escape needs cs
 
 private def escapeCompletion (escape : Option Char) (needs : Char → Bool) (c : Completion) : Completion :=
   { c with replacement := String.ofList (escapeWith escape needs c.replacement.toList) }
@@ -97,6 +106,23 @@ def completeWord {m : Type → Type} [Monad m] (escape : Option Char) (breakChar
   let cands ← f word
   return { kept, candidates := cands.map (escapeCompletion escape (breakChars.contains ·)) }
 
+/-- Like `completeWord`, with word breaks given by a predicate. -/
+def completeWord' {m : Type → Type} [Monad m] (escape : Option Char) (isBreak : Char → Bool)
+    (f : String → m (List Completion)) : CompletionFunc m := fun req => do
+  let cs := req.before.toList
+  let s := wordStart escape isBreak cs 0 0
+  let cands ← f (String.ofList (unescapeWith escape (cs.drop s)))
+  return { kept := String.ofList (cs.take s), candidates := cands.map (escapeCompletion escape isBreak) }
+
+/-- Like `completeWordWithPrev`, with word breaks given by a predicate. -/
+def completeWordWithPrev' {m : Type → Type} [Monad m] (escape : Option Char) (isBreak : Char → Bool)
+    (f : String → String → m (List Completion)) : CompletionFunc m := fun req => do
+  let cs := req.before.toList
+  let s := wordStart escape isBreak cs 0 0
+  let kept := String.ofList (cs.take s)
+  let cands ← f kept (String.ofList (unescapeWith escape (cs.drop s)))
+  return { kept, candidates := cands.map (escapeCompletion escape isBreak) }
+
 /-- Like `completeWord`, but `f` also receives the text before the word. -/
 def completeWordWithPrev {m : Type → Type} [Monad m] (escape : Option Char) (breakChars : List Char)
     (f : String → String → m (List Completion)) : CompletionFunc m := fun req => do
@@ -108,7 +134,7 @@ def completeWordWithPrev {m : Type → Type} [Monad m] (escape : Option Char) (b
 def completeFromList {m : Type → Type} [Monad m] (words : List String)
     (breakChars : List Char := [' ', '\t']) : CompletionFunc m :=
   completeWord none breakChars fun w =>
-    pure ((words.filter (w.isPrefixOf ·)).map simpleCompletion)
+    pure ((words.filter (Text.isPrefix w ·)).map simpleCompletion)
 
 /-- If the cursor is inside an unclosed quote, returns the index of the
 opening quote and the quote character. -/

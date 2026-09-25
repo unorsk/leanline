@@ -9,6 +9,37 @@
  */
 #include <lean/lean.h>
 
+#ifdef _WIN32
+/*
+ * Windows: no console line editing yet. Reporting "not a terminal" makes
+ * Leanline read plain lines through Lean's own streams, which works in any
+ * console; the remaining functions are never reached in that mode.
+ */
+static lean_obj_res ok_unit(void) { return lean_io_result_mk_ok(lean_box(0)); }
+LEAN_EXPORT lean_obj_res leanline_init(void) { return ok_unit(); }
+LEAN_EXPORT lean_obj_res leanline_isatty(uint32_t fd) { (void)fd; return lean_io_result_mk_ok(lean_box(0)); }
+LEAN_EXPORT lean_obj_res leanline_open_tty(void) {
+  return lean_io_result_mk_error(lean_mk_io_user_error(lean_mk_string("leanline: no terminal support on Windows")));
+}
+LEAN_EXPORT lean_obj_res leanline_close(uint32_t fd) { (void)fd; return ok_unit(); }
+LEAN_EXPORT lean_obj_res leanline_raw_enable(uint32_t fd) { (void)fd; return ok_unit(); }
+LEAN_EXPORT lean_obj_res leanline_raw_disable(uint32_t fd) { (void)fd; return ok_unit(); }
+LEAN_EXPORT lean_obj_res leanline_get_size(uint32_t fd) { (void)fd; return lean_io_result_mk_ok(lean_box_uint64(0)); }
+LEAN_EXPORT lean_obj_res leanline_wait(uint32_t fd, uint32_t t) { (void)fd; (void)t; return lean_io_result_mk_ok(lean_box(5)); }
+LEAN_EXPORT lean_obj_res leanline_read(uint32_t fd, size_t max) {
+  (void)fd; (void)max;
+  return lean_io_result_mk_ok(lean_alloc_sarray(1, 0, 0));
+}
+LEAN_EXPORT lean_obj_res leanline_write(uint32_t fd, b_lean_obj_arg bytes) { (void)fd; (void)bytes; return ok_unit(); }
+LEAN_EXPORT lean_obj_res leanline_winch_install(void) { return ok_unit(); }
+LEAN_EXPORT lean_obj_res leanline_winch_uninstall(void) { return ok_unit(); }
+LEAN_EXPORT lean_obj_res leanline_sigint_install(void) { return ok_unit(); }
+LEAN_EXPORT lean_obj_res leanline_sigint_uninstall(void) { return ok_unit(); }
+LEAN_EXPORT lean_obj_res leanline_sigint_take(void) { return lean_io_result_mk_ok(lean_box(0)); }
+LEAN_EXPORT lean_obj_res leanline_wake(void) { return ok_unit(); }
+LEAN_EXPORT lean_obj_res leanline_suspend(uint32_t fd) { (void)fd; return ok_unit(); }
+#else
+
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -315,3 +346,5 @@ LEAN_EXPORT lean_obj_res leanline_suspend(uint32_t fd) {
   sigaction(SIGCONT, &old_cont, NULL);
   return ok_unit();
 }
+
+#endif

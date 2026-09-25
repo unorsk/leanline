@@ -123,7 +123,13 @@ def run {α : Type} (act : InputT m α) (s : Session m) : m α := ReaderT.run ac
 
 def session : InputT m (Session m) := fun s => pure s
 
+/-- Apply a transformation of the underlying monad (Haskeline's `mapInputT`). -/
+def mapInputT {α : Type} (f : {β : Type} → m β → m β) (act : InputT m α) : InputT m α :=
+  fun s => f (act.run s)
+
 end InputT
+
+export InputT (mapInputT)
 
 section
 variable {m : Type → Type} [Monad m] [MonadLiftT IO m] [MonadFinally m]

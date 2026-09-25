@@ -57,14 +57,14 @@ def literalChar (k : Key) : Option Char :=
 
 /-- Last whitespace-separated word of a line. -/
 def lastWord (line : String) : Option String :=
-  (line.splitOn " ").reverse.find? (· != "")
+  (Text.wordsOf line).getLast?
 
 /-- The history suggestion shown after the cursor, if any. -/
 def suggestion (cfg : EditorConfig) (s : EditorState) : Option (List Grapheme) :=
   if !cfg.suggestions || cfg.password || s.overlay != .none || !s.buf.atEnd || s.buf.isEmpty then none
   else
     let text := s.buf.toString
-    match s.history.find? (fun e => text.isPrefixOf e && e != text) with
+    match s.history.find? (fun e => Text.isPrefix text e && e != text) with
     | some e => some ((graphemesOf e).drop s.buf.length)
     | none => none
 
@@ -75,19 +75,24 @@ def replacesFromHistory : Command → Bool
   | .reverseSearchHistory | .forwardSearchHistory => true
   | _ => false
 
-/-- Record an undo step if `cmd` changed the buffer. Consecutive insertions
-(and everything typed in one vi insert session) form a single step. -/
-def recordUndo (cmd : Command) (before : EditorState) (r : StepResult) : StepResult :=
-  let st := r.state
-  if cmd == .undo || cmd == .redo then r
-  else if replacesFromHistory cmd then { r with state := { st with undoGroup := false } }
+/-- The undo stack, redo stack and undo-group flag after `cmd` turned
+`before` into `st`. Consecutive insertions (and everything typed in one vi
+insert session) form a single undo step. -/
+def undoInfo (cmd : Command) (before st : EditorState) : List LineBuffer × List LineBuffer × Bool :=
+  if cmd == .undo || cmd == .redo then (st.undoStack, st.redoStack, st.undoGroup)
+  else if replacesFromHistory cmd then (st.undoStack, st.redoStack, false)
   else if st.buf.graphemes == before.buf.graphemes then
-    if cmd == .selfInsert then r else { r with state := { st with undoGroup := st.undoGroup && st.mode == .vi .insert } }
+    (st.undoStack, st.redoStack,
+      if cmd == .selfInsert then st.undoGroup else st.undoGroup && st.mode == .vi .insert)
   else
-    let grouped := before.undoGroup && (cmd == .selfInsert || st.mode == .vi .insert)
-    let st := if grouped then st
-      else { st with undoStack := before.buf :: st.undoStack, redoStack := [] }
-    { r with state := { st with undoGroup := cmd == .selfInsert || st.mode == .vi .insert } }
+    let continuing := cmd == .selfInsert || st.mode == .vi .insert
+    if before.undoGroup && continuing then (st.undoStack, st.redoStack, continuing)
+    else (before.buf :: st.undoStack, [], continuing)
+
+/-- Record undo information for `cmd`. Only the undo fields change. -/
+def recordUndo (cmd : Command) (before : EditorState) (r : StepResult) : StepResult :=
+  let u := undoInfo cmd before r.state
+  { r with state := { r.state with undoStack := u.1, redoStack := u.2.1, undoGroup := u.2.2 } }
 
 /-- Kill the region between the cursor and where `motion` would move it. -/
 def killMotion (cfg : EditorConfig) (motion : LineBuffer → LineBuffer) (backward : Bool)
@@ -139,7 +144,7 @@ def applyCompletion (cfg : EditorConfig) (kind : CompletionKind) (res : Completi
   let s := { s with last := .complete, undoGroup := false }
   let before := s.buf.textBefore
   let kept := graphemesOf res.kept
-  let word : List Char := if res.kept.isPrefixOf before then before.toList.drop res.kept.length else []
+  let word : List Char := if Text.isPrefix res.kept before then before.toList.drop res.kept.length else []
   let displays := res.candidates.map (·.display)
   let withUndo (b : LineBuffer) : EditorState :=
     if b == s.buf then s else { s with buf := b, undoStack := s.buf :: s.undoStack, redoStack := [] }
@@ -351,9 +356,12 @@ def exec (cfg : EditorConfig) (cmd : Command) (key : Key) (s0 : EditorState) : S
 def runCommand (cfg : EditorConfig) (cmd : Command) (key : Key) (s : EditorState) : StepResult :=
   recordUndo cmd s (exec cfg cmd key s)
 
-/-- Look `keys` up in the user bindings, then in `km`. -/
+/-- Look `keys` up in the user bindings, then in `km`. A user binding wins
+even when it only starts with `keys` (binding `C-c d` makes `C-c` a prefix). -/
 def lookupKeys (cfg : EditorConfig) (km : Keymap) (keys : List Key) : KeymapLookup :=
-  (cfg.bindings ++ km).lookup keys
+  match cfg.bindings.lookup keys with
+  | .unbound => km.lookup keys
+  | r => r
 
 /-- Handle a key with a keymap (Emacs mode and vi insert mode). -/
 def keymapKey (cfg : EditorConfig) (km : Keymap) (s : EditorState) (key : Key) : StepResult :=

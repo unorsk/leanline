@@ -1,3 +1,5 @@
+import Leanline.Text
+
 /-!
 # Keys
 
@@ -89,34 +91,40 @@ private def namedKeys : List (String × BaseKey) :=
    ("tab", .tab), ("esc", .escape), ("escape", .escape), ("space", .char ' '),
    ("spc", .char ' ')]
 
-private def parseBase (s : String) : Option BaseKey :=
-  match s.toList with
+private def parseBase (cs : List Char) : Option BaseKey :=
+  match cs with
   | [c] => some (.char c)
   | _ =>
-    let l := s.toLower
-    match namedKeys.lookup l with
+    let l := Text.lower cs
+    match namedKeys.lookup (String.ofList l) with
     | some b => some b
     | none =>
-      if l.startsWith "f" then (String.ofList (l.toList.drop 1)).toNat? |>.map BaseKey.fn
+      match l with
+      | 'f' :: digits => (Text.toNat? digits).map BaseKey.fn
+      | _ => none
+
+/-- Parse key notation from characters; `fuel` bounds the modifier prefixes. -/
+def parseChars : Nat → List Char → Option Key
+  | 0, _ => none
+  | fuel + 1, cs =>
+    let lower := Text.lower cs
+    let tryPrefix (pre : String) (f : Key → Key) : Option Key :=
+      if pre.toList.isPrefixOf lower && cs.length > pre.length then
+        (parseChars fuel (cs.drop pre.length)).map f
       else none
+    (tryPrefix "ctrl-" withCtrl) <|> (tryPrefix "c-" withCtrl) <|>
+    (tryPrefix "meta-" withAlt) <|> (tryPrefix "alt-" withAlt) <|> (tryPrefix "m-" withAlt) <|>
+    (tryPrefix "shift-" withShift) <|> (tryPrefix "s-" withShift) <|>
+    (parseBase cs).map plain
 
 /-- Parse key notation. Accepts Haskeline's `ctrl-a`, `meta-f`, `shift-left`
 and Emacs's `C-a`, `M-f`, `S-Tab`, in any combination, plus names such as
 `left`, `f5`, `backspace`, `space`. -/
-partial def parse? (s : String) : Option Key :=
-  let lower := s.toLower
-  let tryPrefix (pre : String) (f : Key → Key) : Option Key :=
-    if lower.startsWith pre && s.length > pre.length then
-      (parse? (String.ofList (s.toList.drop pre.length))).map f
-    else none
-  (tryPrefix "ctrl-" withCtrl) <|> (tryPrefix "c-" withCtrl) <|>
-  (tryPrefix "meta-" withAlt) <|> (tryPrefix "alt-" withAlt) <|> (tryPrefix "m-" withAlt) <|>
-  (tryPrefix "shift-" withShift) <|> (tryPrefix "s-" withShift) <|>
-  (parseBase s).map plain
+def parse? (s : String) : Option Key := parseChars (s.length + 1) s.toList
 
 /-- Parse a space-separated key sequence such as `"C-x C-e"`. -/
 def parseSeq? (s : String) : Option (List Key) :=
-  ((s.splitOn " ").filter (· != "")).mapM parse?
+  (Text.wordsOf s).mapM parse?
 
 end Key
 
