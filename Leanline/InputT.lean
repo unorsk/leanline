@@ -79,8 +79,6 @@ def LineResult.toOption : LineResult → Option String
 structure Term where
   inFd : Terminal.Fd
   outFd : Terminal.Fd
-  /-- The descriptor was opened by us and must be closed. -/
-  owned : Bool
   reader : Reader
   /-- No cursor addressing (`TERM=dumb`): single-row, horizontally scrolling display. -/
   dumb : Bool := false
@@ -100,6 +98,10 @@ structure Session (m : Type → Type) [Monad m] where
   prefs : Prefs
   backend : Backend
   history : IO.Ref History
+  /-- Lines added by this session, for merging into the history file. -/
+  added : IO.Ref (Array String)
+  /-- The program replaced the history (`putHistory`/`modifyHistory`); save it as is. -/
+  replaced : IO.Ref Bool
   kill : IO.Ref KillRing
   external : IO.Ref ExternalState
   /-- Inside `withInterrupt`: Ctrl-C raises `interruptedError`. -/
@@ -117,7 +119,7 @@ instance : MonadLift m (InputT m) := inferInstanceAs (MonadLift m (ReaderT (Sess
 instance {ε : Type} [MonadExceptOf ε m] : MonadExceptOf ε (InputT m) :=
   inferInstanceAs (MonadExceptOf ε (ReaderT (Session m) m))
 instance [MonadFinally m] : MonadFinally (InputT m) := inferInstanceAs (MonadFinally (ReaderT (Session m) m))
-instance [Inhabited (m PUnit)] : Inhabited (InputT m PUnit) := ⟨fun _ => default⟩
+instance {α : Type} [Inhabited (m α)] : Inhabited (InputT m α) := ⟨fun _ => default⟩
 
 def run {α : Type} (act : InputT m α) (s : Session m) : m α := ReaderT.run act s
 
@@ -175,21 +177,28 @@ private structure Display where
   screen : Render.Screen := {}
   /-- Columns used by the last drawing on a dumb terminal. -/
   dumbUsed : Nat := 0
+  /-- Cursor shape last requested (DECSCUSR code), 0 if never changed. -/
+  shape : Nat := 0
   deriving Inhabited
 
-private def drawFrame (t : Term) (width : Nat) (d : Display) (f : Render.Frame) : IO Display := do
+/-- Draw a frame, and switch the cursor to `shape` (a DECSCUSR code, 0 to
+leave it alone). -/
+private def drawFrame (t : Term) (width : Nat) (d : Display) (f : Render.Frame) (shape : Nat := 0) :
+    IO Display := do
   if t.dumb then
     let (out, used) := Render.redrawDumb width d.dumbUsed f
     writeTerm t out
     return { d with dumbUsed := used }
   else
     let (out, screen) := Render.redraw width d.screen f
-    writeTerm t out
-    return { d with screen }
+    let shapeOut := if shape != 0 && shape != d.shape then s!"\x1b[{shape} q" else ""
+    writeTerm t (out ++ shapeOut)
+    return { d with screen, shape := if shape != 0 then shape else d.shape }
 
-/-- Move to the line below the drawing. -/
+/-- Move to the line below the drawing (restoring the default cursor shape). -/
 private def leaveFrame (t : Term) (width : Nat) (d : Display) (f : Render.Frame) : IO Unit :=
-  writeTerm t (if t.dumb then "\r\n" else Render.moveBelow width d.screen f)
+  writeTerm t <| (if t.dumb then "\r\n" else Render.moveBelow width d.screen f) ++
+    (if d.shape != 0 then "\x1b[0 q" else "")
 
 /-- Erase the drawing, leaving the cursor where it started. -/
 private def eraseFrame (t : Term) (d : Display) : IO Unit :=
@@ -278,9 +287,10 @@ private def showListing (ses : Session m) (t : Term) (items : List String) : IO 
         else remaining := []
       | _ => remaining := []
 
-/-- Edit `path` with `$VISUAL`, `$EDITOR` or `vi`, returning the new contents. -/
+/-- Edit `text` with `$VISUAL`, `$EDITOR` or a platform default, returning the new contents. -/
 private def runExternalEditor (text : String) : IO (Option String) := do
-  let editor := (← IO.getEnv "VISUAL").getD ((← IO.getEnv "EDITOR").getD "vi")
+  let fallback := if System.Platform.isWindows then "notepad" else "vi"
+  let editor := (← IO.getEnv "VISUAL").getD ((← IO.getEnv "EDITOR").getD fallback)
   let words := (editor.splitOn " ").filter (· != "")
   let (cmd, args) := match words with
     | c :: as => (c, as)
@@ -308,6 +318,13 @@ private def termReadLine (ses : Session m) (t : Term) (prompt : String) (cfg : E
   let mut disp : Display := {}
   let mut size ← io (termSize t)
   let frame := fun (st : EditorState) => frameOf ses prompt echo (Editor.view cfg st)
+  -- In vi mode the cursor shape shows the mode: bar, block or underline.
+  let viShapes := ses.prefs.viCursorShape && cfg.editMode == .vi && !t.dumb
+  let shapeOf := fun (st : EditorState) =>
+    if !viShapes then 0 else match st.mode with
+      | .vi .command => 2
+      | .vi .replace => 4
+      | _ => 6
   -- Draw the final state without hints (followed by `suffix`) and move below it.
   let finish := fun (st : EditorState) (disp : Display) (width : Nat) (suffix : String) =>
     io (m := m) do
@@ -316,17 +333,18 @@ private def termReadLine (ses : Session m) (t : Term) (prompt : String) (cfg : E
       let disp ← drawFrame t width disp f
       writeTerm t suffix
       leaveFrame t width disp f
-  disp ← io (drawFrame t size.cols disp (frame st))
+  disp ← io (drawFrame t size.cols disp (frame st) (shapeOf st))
   repeat
     let msgs ← io (takeMessages ses)
     if !msgs.isEmpty then
       io (eraseFrame t disp)
       io (writeTerm t (String.join (msgs.toList.map (· ++ "\r\n"))))
-      disp ← io (drawFrame t size.cols {} (frame st))
+      disp ← io (drawFrame t size.cols { shape := disp.shape } (frame st) (shapeOf st))
     match ← io t.reader.next with
     | .resized =>
       size ← io (termSize t)
-      disp ← io (drawFrame t size.cols { disp with screen := Render.resize size.cols disp.screen } (frame st))
+      disp ← io (drawFrame t size.cols { disp with screen := Render.resize size.cols disp.screen } (frame st)
+        (shapeOf st))
     | .woken => pure ()
     | .eof =>
       finish st disp size.cols ""
@@ -342,10 +360,14 @@ private def termReadLine (ses : Session m) (t : Term) (prompt : String) (cfg : E
             io (writeTerm t (if t.dumb then "\r\n" else "\x1b[H\x1b[2J"))
             disp := {}
           | .listCompletions items =>
+            disp ← io (drawFrame t size.cols disp (frame st))
             io (leaveFrame t size.cols disp (frame st))
             io (showListing ses t items)
             disp := {}
           | .suspend =>
+            -- Job control exists only on POSIX systems.
+            if System.Platform.isWindows then continue
+            disp ← io (drawFrame t size.cols disp (frame st))
             io (leaveFrame t size.cols disp (frame st))
             io (leaveRaw ses t)
             io (Terminal.suspend t.inFd)
@@ -353,6 +375,7 @@ private def termReadLine (ses : Session m) (t : Term) (prompt : String) (cfg : E
             size ← io (termSize t)
             disp := {}
           | .editInEditor =>
+            disp ← io (drawFrame t size.cols disp (frame st))
             io (leaveFrame t size.cols disp (frame st))
             io (leaveRaw ses t)
             let edited ← io (runExternalEditor st.buf.toString)
@@ -377,7 +400,7 @@ private def termReadLine (ses : Session m) (t : Term) (prompt : String) (cfg : E
           finish st disp size.cols "^C"
           return .interrupted
       if !(← io t.reader.hasBuffered) then
-        disp ← io (drawFrame t size.cols disp (frame st))
+        disp ← io (drawFrame t size.cols disp (frame st) (shapeOf st))
   return .eof
 
 private def stripNewline (s : String) : String :=
@@ -417,6 +440,7 @@ private def fileReadChar (input : IO.FS.Stream) : IO (Option Char) := do
 private def addToHistory (ses : Session m) (line : String) : IO Unit := do
   if ses.settings.autoAddHistory && !line.all Unicode.isSpace then
     ses.history.modify (·.addWith ses.prefs.historyDuplicates line)
+    ses.added.modify (·.push line)
 
 private def throwIfInterruptible (ses : Session m) : InputT m Unit := do
   if ← io ses.interruptible.get then io (throw interruptedError)
@@ -589,8 +613,18 @@ def haveTerminalUI : InputT m Bool := do
   | .file _ => return false
 
 def getHistory : InputT m History := do io (← InputT.session).history.get
-def putHistory (h : History) : InputT m Unit := do io ((← InputT.session).history.set h)
-def modifyHistory (f : History → History) : InputT m Unit := do io ((← InputT.session).history.modify f)
+
+def putHistory (h : History) : InputT m Unit := do
+  let ses ← InputT.session
+  io do
+    ses.history.set h
+    ses.replaced.set true
+
+def modifyHistory (f : History → History) : InputT m Unit := do
+  let ses ← InputT.session
+  io do
+    ses.history.modify f
+    ses.replaced.set true
 
 /-- The preferences in effect. -/
 def getPrefs : InputT m Prefs := return (← InputT.session).prefs
@@ -629,7 +663,7 @@ private def openBackend (behavior : Behavior) (prefs : Prefs) : IO (Backend × I
   let stdinBackend : IO (Backend × IO Unit) := do
     if (← Terminal.isTerminal .stdin) && (← Terminal.isTerminal .stdout) then
       let reader ← Reader.create .stdin table prefs.keySeqTimeout
-      return (.terminal { inFd := .stdin, outFd := .stdout, owned := false, reader, dumb }, pure ())
+      return (.terminal { inFd := .stdin, outFd := .stdout, reader, dumb }, pure ())
     return (.file (← IO.getStdin), pure ())
   match behavior with
   | .defaultBehavior => stdinBackend
@@ -641,7 +675,7 @@ private def openBackend (behavior : Behavior) (prefs : Prefs) : IO (Backend × I
     try
       let fd ← Terminal.openControllingTerminal
       let reader ← Reader.create fd table prefs.keySeqTimeout
-      return (.terminal { inFd := fd, outFd := fd, owned := true, reader, dumb }, Terminal.close fd)
+      return (.terminal { inFd := fd, outFd := fd, reader, dumb }, Terminal.close fd)
     catch _ => stdinBackend
 
 /-- Run with explicit behaviour and preferences. -/
@@ -655,12 +689,21 @@ def runInputTBehaviorWithPrefs {α : Type} (behavior : Behavior) (prefs : Prefs)
   let ses : Session m :=
     { settings, prefs, backend
       history := ← lift (IO.mkRef hist)
+      added := ← lift (IO.mkRef #[])
+      replaced := ← lift (IO.mkRef false)
       kill := ← lift (IO.mkRef {})
       external := ← lift (IO.mkRef {})
       interruptible := ← lift (IO.mkRef false) }
   tryFinally (act.run ses) <| lift do
     if let some path := settings.historyFile then
-      try (← ses.history.get).writeFile path catch _ => pure ()
+      try
+        -- Merge with lines saved by other sessions meanwhile, unless the
+        -- program replaced the history wholesale.
+        let toSave ← if ← ses.replaced.get then ses.history.get else do
+          let current ← History.readFile path prefs.maxHistorySize
+          pure ((← ses.added.get).foldl (fun h l => h.addWith prefs.historyDuplicates l) current)
+        if !(← ses.added.get).isEmpty || (← ses.replaced.get) then toSave.writeFile path
+      catch _ => pure ()
     cleanup
 
 /-- Run with preferences read from `~/.leanline`. -/

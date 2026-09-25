@@ -40,6 +40,8 @@ example :
     p.keySeqTable (some "rxvt") = [([0x1B, 0x5B, 0x39, 0x39, 0x7E], .plain (.fn 12))] := by
   decide +kernel
 
+example : (Prefs.parse "viCursorShape: False").1.viCursorShape = false := by decide +kernel
+
 /-- Defaults match Haskeline's. -/
 example : (Prefs.parse "").1.maxHistorySize = some 100 := by decide +kernel
 example : (Prefs.parse "").1.editMode = .emacs := by decide +kernel

@@ -67,6 +67,8 @@ structure Prefs where
   historySuggestions : Bool := false
   /-- Up/Down search history for entries starting with the text before the cursor. -/
   prefixHistorySearch : Bool := false
+  /-- In vi mode, show the mode through the cursor shape (bar, block, underline). -/
+  viCursorShape : Bool := true
   deriving Repr, Inhabited
 
 namespace Prefs
@@ -171,6 +173,7 @@ def applySetting (p : Prefs) (field value : String) : Except String Prefs :=
   | "keyseqtimeout" => orBad (Text.toNat? value.toList) fun v => { p with keySeqTimeout := v }
   | "historysuggestions" => orBad (parseBool value) fun v => { p with historySuggestions := v }
   | "prefixhistorysearch" => orBad (parseBool value) fun v => { p with prefixHistorySearch := v }
+  | "vicursorshape" => orBad (parseBool value) fun v => { p with viCursorShape := v }
   | "bind" =>
     match Key.parseSeq? value with
     | some (k :: ks) => .ok { p with customBindings := p.customBindings ++ [(k, ks)] }

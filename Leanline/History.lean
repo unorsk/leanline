@@ -132,7 +132,11 @@ def writeFile (path : System.FilePath) (h : History) : IO Unit := do
     if dir.toString != "" then IO.FS.createDirAll dir
   let tmp : System.FilePath := path.toString ++ ".tmp"
   IO.FS.writeFile tmp h.serialize
-  IO.FS.rename tmp path
+  try IO.FS.rename tmp path
+  catch _ =>
+    -- Some platforms refuse to rename over an existing file.
+    IO.FS.writeFile path h.serialize
+    try IO.FS.removeFile tmp catch _ => pure ()
 
 end History
 

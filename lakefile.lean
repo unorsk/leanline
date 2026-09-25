@@ -14,9 +14,10 @@ target ffiObj pkg : FilePath := do
   let src ← ffiSrc.fetch
   let oFile := pkg.buildDir / "c" / "leanline_ffi.o"
   let leanInclude ← getLeanIncludeDir
-  -- The system C compiler is used because the toolchain's bundled clang ships
-  -- without libc headers.
-  buildO oFile src #["-I", leanInclude.toString] #["-fPIC", "-O2", "-Wall"] "cc"
+  -- The system C compiler (or `$CC`) is used because the toolchain's bundled
+  -- clang ships without libc headers.
+  let cc := (← IO.getEnv "CC").getD "cc"
+  buildO oFile src #["-I", leanInclude.toString] #["-fPIC", "-O2", "-Wall"] cc
 
 target ffiLib pkg : FilePath := do
   let obj ← ffiObj.fetch
